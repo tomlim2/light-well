@@ -16,7 +16,7 @@ import { fishGeometry, BODIES, School } from './school.js';
 export const ROOM = {
   ceiling: 8.2, // floor to ceiling
   half: 1.55, // half the side of the square hole (and of the column of light)
-  shaft: 1.0, // how deep the hole is, up to the water
+  shaft: 0.5, // how deep the hole is, up to the water: a thin slab, as the reference has it
   turn: THREE.MathUtils.degToRad(41), // the hole is turned this far about the vertical
 };
 
