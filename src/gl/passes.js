@@ -66,17 +66,22 @@ export const VOLUME_FRAG = /* glsl */ `
         vec2 local = beamLocalAt(p.xz, p.y);
         float s = sunlight(local);
         // streaks: the pattern's peaks, not its mean, and brightest just under the hole
-        // just under the hole the water is full of light that has not spread yet: a bright haze
-        // that spills a little past the hole's edge
+        // just under the hole the water is a little brighter: light that has not spread yet. Kept
+        // faint, and barely past the hole's edge: more of it veils the surface seen through it and
+        // bleeds onto the ceiling, which the reference does not do
         // (below the ceiling only: in the shaft it would lie over the water's surface and wash it out)
         float nearTop = exp(-max(uBeam.w - p.y, 0.0) * 1.1) * (1.0 - smoothstep(uBeam.w, uBeam.w + 0.3, p.y));
-        float rays = 0.02 + 1.0 * pow(s, 2.2) + 0.55 * nearTop;
-        float edge = beamInside(local, 0.1 + 0.45 * nearTop);
+        float rays = 0.02 + 1.0 * pow(s, 2.2) + 0.2 * nearTop;
+        float edge = beamInside(local, 0.1 + 0.15 * nearTop);
         float fall = exp(-max(uBeam.w - p.y, 0.0) * 0.45);
         glow += rays * edge * fall * unshaded(local, p.y, 0.4) * dt;
         t += dt;
       }
     }
+    // The beam in front of the cube (the surface and the shaft) is drawn fainter: as the reference
+    // has it, the cube stays dark and crisp with the streaks beginning beneath it.
+    float hitY = uCam.y + dir.y * sceneDist;
+    glow *= mix(1.0, 0.35, smoothstep(uBeam.w - 0.3, uBeam.w + 0.2, hitY));
     vec3 col = vec3(0.36, 0.66, 0.74) * glow * 0.45;
 
     // The halo: the water round the column, lit by what the column scatters. Only outside it: inside,
@@ -101,7 +106,7 @@ export const BRIGHT_FRAG = /* glsl */ `
   void main() {
     vec3 c = texture2D(uScene, vUv).rgb + texture2D(uVolume, vUv).rgb;
     float l = max(c.r, max(c.g, c.b));
-    float keep = smoothstep(1.1, 2.2, l);
+    float keep = smoothstep(1.3, 2.4, l);
     gl_FragColor = vec4(c * keep, 1.0);
   }
 `;

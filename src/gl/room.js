@@ -98,10 +98,10 @@ export const ROOM_FRAG = /* glsl */ `
     float hx = fbm(p * 1.7 + vec2(0.05, 0.0) + vec2(t * 0.22, -t * 0.17));
     float hz = fbm(p * 1.7 + vec2(0.0, 0.05) + vec2(t * 0.22, -t * 0.17));
     vec2 slope = vec2(hx - h0, hz - h0) / 0.05;
-    float fine = fbm(p * 6.0 - vec2(t * 0.5, t * 0.35));
+    float fine = fbm(p * 4.5 - vec2(t * 0.5, t * 0.35));
     // where the surface tips toward us, it lets the sky through; elsewhere it mirrors the lit shaft
     float tip = clamp(0.5 + 0.35 * dot(slope, normalize(uCam.xz - p)) + 0.9 * (fine - 0.5), 0.0, 1.0);
-    vec3 mirror = vec3(0.38, 0.74, 0.86) * (0.32 + 0.34 * h0);
+    vec3 mirror = vec3(0.3, 0.62, 0.78) * (0.22 + 0.3 * h0);
     // the low sun comes in from one side: that half of the surface is full of warm glitter
     float side = smoothstep(-0.6, 0.9, local.x / uBeam.x);
     // deep orange kept near 1.0: brighter would only tonemap to cream
@@ -122,6 +122,8 @@ export const ROOM_FRAG = /* glsl */ `
       float up = clamp((vWorld.y - uBeam.w) / uShaft, 0.0, 1.0);
       float streak = sunlight(local * 0.94);
       col = vec3(0.36, 0.7, 0.82) * (0.25 + 0.8 * streak) * mix(0.4, 1.0, up);
+      // the bottom edge of the shaft catches the light: a thin bright rim where the beam begins
+      col += vec3(0.5, 0.8, 0.9) * exp(-(vWorld.y - uBeam.w) * 7.0) * 0.5;
     } else {
       // the ceiling and the walls: dark stone, a little light thrown on it round the hole
       vec2 out_ = max(abs(local) - uBeam.x, 0.0);
