@@ -64,7 +64,7 @@ export const FLOOR_FRAG = /* glsl */ `
     float tone = 0.7 + 0.45 * s.y + 0.4 * (grit - 0.5);
     vec3 albedo = vec3(0.17, 0.21, 0.23) * tone * (1.0 - 0.45 * seam);
 
-    vec2 local = beamLocal(p);
+    vec2 local = beamLocalAt(p, 0.0);
     float inside = beamInside(local, 0.22);
     float pools = sunlight(local);
     // the fish are far above the floor, so their shadows are soft: take a few looks round about
@@ -91,7 +91,7 @@ export const ROOM_FRAG = /* glsl */ `
   ${COMMON}
 
   // the water seen from underneath: ripples catch the bright sky and the warm low sun
-  vec3 water() {
+  vec3 water(vec2 local) {
     vec2 p = vWorld.xz;
     float t = uTime;
     float h0 = fbm(p * 1.7 + vec2(t * 0.22, -t * 0.17));
@@ -100,10 +100,13 @@ export const ROOM_FRAG = /* glsl */ `
     vec2 slope = vec2(hx - h0, hz - h0) / 0.05;
     float fine = fbm(p * 6.0 - vec2(t * 0.5, t * 0.35));
     // where the surface tips toward us, it lets the sky through; elsewhere it mirrors the lit shaft
-    float tip = clamp(0.5 + 0.35 * dot(slope, normalize(uCam.xz - p)) + 0.5 * (fine - 0.5), 0.0, 1.0);
-    vec3 mirror = vec3(0.38, 0.74, 0.86) * (0.45 + 0.4 * h0);
-    vec3 sky = mix(vec3(1.0, 0.6, 0.28), vec3(1.0, 0.86, 0.62), fine);
-    vec3 col = mix(mirror, sky * 1.1, smoothstep(0.5, 0.85, tip));
+    float tip = clamp(0.5 + 0.35 * dot(slope, normalize(uCam.xz - p)) + 0.9 * (fine - 0.5), 0.0, 1.0);
+    vec3 mirror = vec3(0.38, 0.74, 0.86) * (0.32 + 0.34 * h0);
+    // the low sun comes in from one side: that half of the surface is full of warm glitter
+    float side = smoothstep(-0.6, 0.9, local.x / uBeam.x);
+    // deep orange kept near 1.0: brighter would only tonemap to cream
+    vec3 sky = mix(vec3(1.0, 0.45, 0.15), vec3(1.0, 0.8, 0.5), fine);
+    vec3 col = mix(mirror, sky * mix(0.85, 1.15, side), smoothstep(mix(0.5, 0.34, side), mix(0.85, 0.72, side), tip));
     // glints
     col += vec3(1.0, 0.85, 0.6) * pow(smoothstep(0.8, 1.0, fine + 0.25 * length(slope)), 3.0) * 1.4;
     return col;
@@ -113,7 +116,7 @@ export const ROOM_FRAG = /* glsl */ `
     vec2 local = beamLocal(vWorld.xz);
     vec3 col;
     if (uPart == 2) {
-      col = water();
+      col = water(local);
     } else if (uPart == 1) {
       // the shaft's walls: light running down them in streaks, brightest up by the water
       float up = clamp((vWorld.y - uBeam.w) / uShaft, 0.0, 1.0);

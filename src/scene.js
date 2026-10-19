@@ -10,7 +10,7 @@ import { CAUSTIC_FRAG } from './gl/light.js';
 import { WORLD_VERT, FLOOR_FRAG, ROOM_FRAG } from './gl/room.js';
 import { FISH_VERT, FISH_FRAG, MASK_VERT, MASK_FRAG } from './gl/fish.js';
 import { QUAD_VERT, VOLUME_FRAG, BRIGHT_FRAG, DOWN_FRAG, UP_FRAG, FINAL_FRAG } from './gl/passes.js';
-import { fishGeometry, School } from './school.js';
+import { fishGeometry, BODIES, School } from './school.js';
 
 // the room, in metres
 export const ROOM = {
@@ -20,7 +20,8 @@ export const ROOM = {
   turn: THREE.MathUtils.degToRad(41), // the hole is turned this far about the vertical
 };
 
-export function createScene(host, { onFail } = {}) {
+export function createScene(host, hooks = {}) {
+  const { onFail } = hooks;
   const canvas = document.createElement('canvas');
   canvas.className = 'stage';
   host.appendChild(canvas);
@@ -66,6 +67,8 @@ export function createScene(host, { onFail } = {}) {
     uHeights: { value: heightRT.texture },
     uTime: { value: 0 },
     uCam: { value: new THREE.Vector3() },
+    uClock: { value: 0 },
+    uFright: { value: 0 },
   };
 
   const camera = new THREE.PerspectiveCamera(60, 9 / 16, 0.1, 80);
@@ -140,12 +143,9 @@ export function createScene(host, { onFail } = {}) {
 
   /* ---------------------------------------------------------------- the fish */
   const school = new School({ half: ROOM.half, turn: ROOM.turn, low: 3.2, high: 7.2 });
-  const fishGeo = keep(fishGeometry());
-  school.looks(fishGeo);
+  const fishGeos = Object.fromEntries(Object.entries(BODIES).map(([body, shape]) => [body, keep(fishGeometry(shape))]));
+  school.looks(fishGeos);
   const fishMat = keep(new THREE.ShaderMaterial({ uniforms: shared, vertexShader: FISH_VERT, fragmentShader: FISH_FRAG, side: THREE.DoubleSide }));
-  const fish = new THREE.InstancedMesh(fishGeo, fishMat, school.fish.length);
-  fish.frustumCulled = false;
-  world.add(fish);
 
   // the same fish, drawn from above into the height map
   const maskMat = keep(
@@ -163,10 +163,18 @@ export function createScene(host, { onFail } = {}) {
     })
   );
   const maskScene = new THREE.Scene();
-  const maskFish = new THREE.InstancedMesh(fishGeo, maskMat, school.fish.length);
-  maskFish.instanceMatrix = fish.instanceMatrix; // the very same matrices
-  maskFish.frustumCulled = false;
-  maskScene.add(maskFish);
+  // one instanced mesh per body shape, and its twin in the height map sharing the very same matrices
+  const fishMeshes = {};
+  for (const [body, group] of Object.entries(school.groups)) {
+    const mesh = new THREE.InstancedMesh(fishGeos[body], fishMat, group.length);
+    mesh.frustumCulled = false;
+    world.add(mesh);
+    const mask = new THREE.InstancedMesh(fishGeos[body], maskMat, group.length);
+    mask.instanceMatrix = mesh.instanceMatrix;
+    mask.frustumCulled = false;
+    maskScene.add(mask);
+    fishMeshes[body] = mesh;
+  }
 
   /* ---------------------------------------------------------------- passes */
   const causticPass = pass(CAUSTIC_FRAG, { uTime: shared.uTime, uHalf: { value: ROOM.half } });
@@ -197,7 +205,9 @@ export function createScene(host, { onFail } = {}) {
   // The picture is composed for a tall screen: the hole near the top, the lit floor along the
   // bottom. On a wider screen the same height is kept and the dark simply goes on to the sides; on
   // a narrower one the lens widens until the column fits across.
-  const view = { look: new THREE.Vector3(0, 4.55, 0), from: new THREE.Vector3(0.35, 2.6, 9.6), fovTall: 71 };
+  // Fitted to the reference: the hole's and the floor patch's corners projected to the same places
+  // in a 9:16 frame (a least-squares search over position, aim and lens, see MAP.md)
+  const view = { look: new THREE.Vector3(0, 4.3, 0), from: new THREE.Vector3(-1.54, 2.71, 10.16), fovTall: 61 };
   const pointer = { x: 0, y: 0, sx: 0, sy: 0 };
   function frame() {
     const w = host.clientWidth || 1;
@@ -243,6 +253,19 @@ export function createScene(host, { onFail } = {}) {
     pointer.y = ((e.clientY - b.top) / b.height) * 2 - 1;
   };
   window.addEventListener('pointermove', onMove);
+  // a tap startles the school: the spot is where the tap's ray crosses the column's middle plane
+  const tapRay = new THREE.Vector3();
+  const onTap = (e) => {
+    const b = host.getBoundingClientRect();
+    tapRay.set(((e.clientX - b.left) / b.width) * 2 - 1, -(((e.clientY - b.top) / b.height) * 2 - 1), 0.5).unproject(camera).sub(camera.position).normalize();
+    if (tapRay.z >= -1e-4) return;
+    const along = -camera.position.z / tapRay.z;
+    const at = camera.position.clone().addScaledVector(tapRay, along);
+    at.y = Math.min(Math.max(at.y, 0.5), ROOM.ceiling);
+    school.startle(at);
+    hooks.onStartle?.();
+  };
+  host.addEventListener('pointerdown', onTap);
 
   /* ---------------------------------------------------------------- a frame */
   function draw() {
@@ -288,15 +311,19 @@ export function createScene(host, { onFail } = {}) {
   let before = 0;
   let t = 0;
   let frozen = false;
+  let clock = 0; // the swimming clock: runs faster while the school is bolting
   function tick(dt) {
     t += dt;
     shared.uTime.value = t;
+    clock += dt * (1 + 1.6 * school.fright);
+    shared.uClock.value = clock;
+    shared.uFright.value = school.fright;
     pointer.sx += (pointer.x - pointer.sx) * (1 - Math.exp(-2 * dt));
     pointer.sy += (pointer.y - pointer.sy) * (1 - Math.exp(-2 * dt));
     aim(t);
     shared.uCam.value.copy(camera.position);
     school.step(Math.min(dt, 1 / 30), t);
-    school.write(fish);
+    school.write(fishMeshes);
     draw();
   }
   function loop(now) {
@@ -316,6 +343,7 @@ export function createScene(host, { onFail } = {}) {
       camera,
       view,
       school,
+      startle: (p) => school.startle(p),
       shared,
       volume: volumePass.u,
       final: finalPass.u,
@@ -332,6 +360,7 @@ export function createScene(host, { onFail } = {}) {
       cancelAnimationFrame(raf);
       watcher.disconnect();
       window.removeEventListener('pointermove', onMove);
+      host.removeEventListener('pointerdown', onTap);
       for (const o of owned) o.dispose();
       renderer.dispose();
       canvas.remove();

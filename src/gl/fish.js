@@ -1,6 +1,6 @@
 // A fish: one mesh, instanced. The vertex shader makes it swim (a wave running down the body to the
 // tail); the fragment shader lights it from above with the same sunlight the floor gets.
-import { BEAM, REACH } from './light.js';
+import { BEAM, REACH, FLARE } from './light.js';
 import { FOG } from './room.js';
 
 // the body bends; both the fish and their height mask need it, so it is shared
@@ -9,11 +9,12 @@ const SWIM = /* glsl */ `
   attribute float aFin;     // 0 body, 1 fin
   attribute vec3 aTint;     // this fish's colour
   attribute vec4 aLook;     // phase, how fast the tail beats, how hard, belly paleness
-  uniform float uTime;
+  uniform float uClock;     // the swimming clock: time, run faster while the school is bolting
+  uniform float uFright;
   vec3 swim(vec3 p) {
     float k = smoothstep(0.12, 1.0, aAlong);
-    float wave = sin(uTime * aLook.y + aLook.x - aAlong * 5.0);
-    p.z += k * k * aLook.z * wave;
+    float wave = sin(uClock * aLook.y + aLook.x - aAlong * 5.0);
+    p.z += k * k * aLook.z * (1.0 + 0.6 * uFright) * wave;
     // the head yaws a touch the other way, the way a fish's does
     p.z -= (1.0 - k) * 0.02 * aLook.z * 6.0 * wave * (1.0 - aAlong);
     return p;
@@ -56,7 +57,7 @@ export const FISH_FRAG = /* glsl */ `
     vec3 V = normalize(uCam - vWorld);
     float facing = dot(N, V);
     if (facing < 0.0) N = -N; // fins are seen from both sides
-    vec2 local = beamLocal(vWorld.xz);
+    vec2 local = beamLocalAt(vWorld.xz, vWorld.y);
     float inside = beamInside(local, 0.3);
     float sun = (0.3 + 1.2 * sunlight(local)) * inside;
     // the fish's own back (and any fish above it) shades its belly
@@ -95,10 +96,12 @@ export const MASK_VERT = /* glsl */ `
   ${SWIM}
   uniform vec4 uBeam;
   const float REACH = ${REACH.toFixed(2)};
+  const float FLARE = ${FLARE.toFixed(2)};
   varying float vHeight;
   void main() {
     vec4 w = modelMatrix * instanceMatrix * vec4(swim(position), 1.0);
-    vec2 local = vec2(w.x * uBeam.y + w.z * uBeam.z, -w.x * uBeam.z + w.z * uBeam.y);
+    // in the beam's frame at this height, so the shadow falls along the (diverging) ray
+    vec2 local = vec2(w.x * uBeam.y + w.z * uBeam.z, -w.x * uBeam.z + w.z * uBeam.y) / mix(FLARE, 1.0, clamp(w.y / uBeam.w, 0.0, 1.0));
     vec2 uv = local / (uBeam.x * REACH * 2.0) + 0.5;
     vHeight = w.y;
     gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);

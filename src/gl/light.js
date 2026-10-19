@@ -8,15 +8,24 @@
 import { NOISE } from './noise.js';
 
 export const REACH = 1.3; // the textures reach this many half widths out from the middle
+// The beam is not a prism: light from a wide bright surface spreads, so the column is this much
+// wider at the floor than at the hole. Everything works in coordinates squeezed back to the hole's
+// size at each height, so points on one (diverging) ray share the same local position.
+export const FLARE = 1.35;
 
 export const BEAM = /* glsl */ `
   uniform vec4 uBeam;    // half width of the lit square, cos and sin of its turn, height of the ceiling
   uniform sampler2D uLight;
   uniform sampler2D uHeights;
   const float REACH = ${REACH.toFixed(2)};
+  const float FLARE = ${FLARE.toFixed(2)};
   vec2 beamLocal(vec2 xz) {
     return vec2(xz.x * uBeam.y + xz.y * uBeam.z, -xz.x * uBeam.z + xz.y * uBeam.y);
   }
+  // how much wider the beam is at height y than at the hole
+  float beamSpread(float y) { return mix(FLARE, 1.0, clamp(y / uBeam.w, 0.0, 1.0)); }
+  // the beam's own frame at height y: inside the light means |local| < half, at any height
+  vec2 beamLocalAt(vec2 xz, float y) { return beamLocal(xz) / beamSpread(y); }
   vec2 beamUv(vec2 local) { return local / (uBeam.x * REACH * 2.0) + 0.5; }
   // 1 inside the lit square, falling to 0 across a soft edge
   float beamInside(vec2 local, float soft) {

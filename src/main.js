@@ -2,6 +2,7 @@ import { createScene } from './scene.js';
 
 const scene = createScene(document.getElementById('stage'), {
   onFail: () => (document.getElementById('fail').hidden = false),
+  onStartle: () => document.getElementById('hint').classList.add('gone'),
 });
 
 if (import.meta.env.DEV && scene) {

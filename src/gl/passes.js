@@ -45,8 +45,9 @@ export const VOLUME_FRAG = /* glsl */ `
     vec2 d = beamLocal(dir.xz);
     vec3 ro = vec3(o.x, uCam.y, o.y);
     vec3 rd = vec3(d.x, dir.y, d.y);
-    vec3 lo = vec3(-uBeam.x, 0.0, -uBeam.x);
-    vec3 hi = vec3(uBeam.x, uBeam.w + uShaft, uBeam.x);
+    // the box round the whole flared column; steps that fall outside the light add nothing
+    vec3 lo = vec3(-uBeam.x * FLARE, 0.0, -uBeam.x * FLARE);
+    vec3 hi = vec3(uBeam.x * FLARE, uBeam.w + uShaft, uBeam.x * FLARE);
     vec3 inv = 1.0 / (rd + vec3(1e-6) * sign(rd + 1e-9));
     vec3 ta = (lo - ro) * inv;
     vec3 tb = (hi - ro) * inv;
@@ -62,11 +63,15 @@ export const VOLUME_FRAG = /* glsl */ `
       for (int i = 0; i < 64; i++) {
         if (i >= uSteps) break;
         vec3 p = uCam + dir * t;
-        vec2 local = beamLocal(p.xz);
+        vec2 local = beamLocalAt(p.xz, p.y);
         float s = sunlight(local);
         // streaks: the pattern's peaks, not its mean, and brightest just under the hole
-        float rays = 0.02 + 1.0 * pow(s, 2.2);
-        float edge = beamInside(local, 0.1);
+        // just under the hole the water is full of light that has not spread yet: a bright haze
+        // that spills a little past the hole's edge
+        // (below the ceiling only: in the shaft it would lie over the water's surface and wash it out)
+        float nearTop = exp(-max(uBeam.w - p.y, 0.0) * 1.1) * (1.0 - smoothstep(uBeam.w, uBeam.w + 0.3, p.y));
+        float rays = 0.02 + 1.0 * pow(s, 2.2) + 0.55 * nearTop;
+        float edge = beamInside(local, 0.1 + 0.45 * nearTop);
         float fall = exp(-max(uBeam.w - p.y, 0.0) * 0.45);
         glow += rays * edge * fall * unshaded(local, p.y, 0.4) * dt;
         t += dt;
@@ -82,7 +87,7 @@ export const VOLUME_FRAG = /* glsl */ `
     float miss = length(oxz + dxz * along);
     float y = uCam.y + dir.y * along;
     float height = smoothstep(-0.5, 1.5, y) * (1.0 - smoothstep(uBeam.w - 1.0, uBeam.w + 0.5, y));
-    float outside = 1.0 - beamInside(beamLocal(oxz + dxz * along), 0.35);
+    float outside = 1.0 - beamInside(beamLocalAt(oxz + dxz * along, y), 0.35);
     col += vec3(0.05, 0.13, 0.16) * exp(-miss * miss / 5.0) * height * outside * 0.6 * uHalo;
     gl_FragColor = vec4(col, 1.0);
   }
