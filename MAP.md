@@ -3,7 +3,9 @@
 빛우물 — 물속 석실. 천장의 네모난 구멍으로 햇빛 기둥이 내려오고, 바닥에는 커스틱 무늬가 일렁이고, 기둥 속을 금붕어 떼가 돈다.
 실시간 WebGL 장면. 에셋 없음.
 
-- 저장소: (아직 로컬)
+- 사이트: https://tomlim2.github.io/light-well/
+- 저장소: https://github.com/tomlim2/light-well
+- 허브: [LLM Works](https://tomlim2.github.io/llm-playground/) 에 등록 (허브 `projects.json` 첫 번째)
 - 참고: X의 5초 생성 영상 한 편. 정지 화면을 겹쳐 구도와 치수를 맞춘 뒤 전부 새로 만듦
 
 ## 장면 (쉬운 설명)
@@ -78,6 +80,22 @@ npm run dev     # www/.claude/launch.json 의 "light-well" 은 5191
 - `__lw.run(초)` 시계를 그만큼 돌리고 멈춤, `__lw.resume()`
 - `__lw.volume.uDebug.value = 1` 볼륨 패스가 깊이(거리/20)를 그린다
 - `__lw.volume.uSteps / uHalo`, `__lw.final.uBloomAmt / uExposure` 레이어별로 끄고 켜기
+
+## 배포
+
+```bash
+npm version patch   # minor / major 도 됨
+```
+
+버전을 올리면 `v*` 태그가 push 되고, 태그가 `.github/workflows/deploy.yml` 을 돌려 `npm ci` → `npm run build` → Pages 에 올린다.
+커밋하지 않은 변경이 있으면 `npm version` 이 멈추니 먼저 커밋. GitHub 설정(Pages 소스 = Actions, `github-pages` 환경에 `main`·`v*` 허용)은 해 둠.
+허브는 새 배포를 알아서 찾아 썸네일을 다시 찍는다.
+
+### 버전 기록
+
+| 버전 | 날짜 | 내용 |
+|---|---|---|
+| v0.2.0 | 2026-10-19 | 첫 공개 |
 
 ## 알려진 한계
 

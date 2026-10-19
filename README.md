@@ -3,6 +3,8 @@
 물속 석실의 천창으로 햇빛 기둥이 쏟아지고, 그 빛 속을 금붕어 떼가 느리게 돈다. three.js(WebGL 2)와 직접 쓴 GLSL로 그린 실시간 장면.
 모델 파일도 텍스처도 없다: 물고기는 코드로 만든 메시 하나를 40마리로 찍었고, 빛·커스틱·돌바닥은 전부 셰이더다.
 
+https://tomlim2.github.io/light-well/
+
 ```bash
 npm install
 npm run dev
