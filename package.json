@@ -1,0 +1,19 @@
+{
+  "name": "light-well",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "빛우물: 물속 석실 천창으로 쏟아지는 빛기둥과 그 안을 헤엄치는 금붕어 떼. three.js + GLSL.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "postversion": "git push --follow-tags"
+  },
+  "dependencies": {
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^8.3.2"
+  }
+}

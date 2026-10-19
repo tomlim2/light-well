@@ -1,0 +1,5 @@
+node_modules
+dist
+.DS_Store
+# reference stills for lining the scene up while developing; not ours to publish
+public/_ref
