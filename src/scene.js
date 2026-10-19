@@ -1,16 +1,19 @@
 // The scene and its frame loop.
 //
 // Each frame:
+//   0. the school: two compute kernels move every fish                                   (GPU)
 //   1. the caustic pattern of the light, and a top-down map of how high the fish are   (small)
 //   2. the chamber and the fish, in HDR                                                 -> scene
 //   3. the light in the water, marched through the column at half size                -> volume
 //   4. bloom, then grading to the screen
-import * as THREE from 'three';
-import { CAUSTIC_FRAG } from './gl/light.js';
-import { WORLD_VERT, FLOOR_FRAG, ROOM_FRAG } from './gl/room.js';
-import { FISH_VERT, FISH_FRAG, MASK_VERT, MASK_FRAG } from './gl/fish.js';
-import { QUAD_VERT, VOLUME_FRAG, BRIGHT_FRAG, DOWN_FRAG, UP_FRAG, FINAL_FRAG } from './gl/passes.js';
-import { fishGeometry, BODIES, School } from './school.js';
+import * as THREE from 'three/webgpu';
+import { uniform } from 'three/tsl';
+import { createBeam, causticMaterial } from './tsl/light.js';
+import { floorMaterial, roomMaterial, CEILING, SHAFT, WATER } from './tsl/room.js';
+import { fishMaterial, maskMaterial } from './tsl/fish.js';
+import { volumeMaterial, brightMaterial, downMaterial, upMaterial, finalMaterial } from './tsl/passes.js';
+import { createSchool } from './tsl/boids.js';
+import { fishGeometry, BODIES } from './school.js';
 
 // the room, in metres
 export const ROOM = {
@@ -20,21 +23,37 @@ export const ROOM = {
   turn: THREE.MathUtils.degToRad(41), // the hole is turned this far about the vertical
 };
 
-export function createScene(host, hooks = {}) {
-  const { onFail } = hooks;
+// WebGPU where there is one, WebGL 2 where there is not (three.js falls back by itself); a
+// backend that will not start is tried once more the other way
+async function makeRenderer(canvas, forceWebGL) {
+  const make = (gl) => new THREE.WebGPURenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance', forceWebGL: gl });
+  let renderer = make(forceWebGL);
+  try {
+    await renderer.init();
+    return renderer;
+  } catch (e) {
+    console.warn('light-well: the renderer did not start', e);
+    if (forceWebGL) return null;
+  }
+  renderer.dispose();
+  renderer = make(true);
+  try {
+    await renderer.init();
+    return renderer;
+  } catch (e) {
+    console.warn('light-well: WebGL 2 did not start either', e);
+    renderer.dispose();
+    return null;
+  }
+}
+
+export async function createScene(host, hooks = {}) {
+  const { onFail, forceWebGL = false, fish: fishScale = 1 } = hooks;
   const canvas = document.createElement('canvas');
   canvas.className = 'stage';
   host.appendChild(canvas);
-  let renderer;
-  try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
-  } catch {
-    canvas.remove();
-    onFail?.();
-    return null;
-  }
-  if (!renderer.extensions.has('EXT_color_buffer_float') && !renderer.extensions.has('EXT_color_buffer_half_float')) {
-    renderer.dispose();
+  const renderer = await makeRenderer(canvas, forceWebGL);
+  if (!renderer) {
     canvas.remove();
     onFail?.();
     return null;
@@ -43,51 +62,49 @@ export function createScene(host, hooks = {}) {
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, coarse ? 1.5 : 2));
   renderer.autoClear = false;
   renderer.setClearColor(0x000000, 1);
+  // the last pass writes display values itself
+  renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+  renderer.toneMapping = THREE.NoToneMapping;
 
   const owned = [];
   const keep = (x) => (owned.push(x), x);
   const half = (w, h) => [Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2))];
 
   /* ---------------------------------------------------------------- targets */
-  const sceneRT = keep(new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4, depthBuffer: true }));
-  sceneRT.depthTexture = new THREE.DepthTexture(1, 1);
-  sceneRT.depthTexture.type = THREE.UnsignedIntType;
-  const volumeRT = keep(new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false }));
-  const lightRT = keep(new THREE.WebGLRenderTarget(384, 384, { type: THREE.HalfFloatType, depthBuffer: false }));
-  const heightRT = keep(new THREE.WebGLRenderTarget(256, 256, { type: THREE.HalfFloatType, depthBuffer: false }));
+  const hdr = { type: THREE.HalfFloatType, depthBuffer: false };
+  const sceneRT = keep(new THREE.RenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4, depthBuffer: true, depthTexture: new THREE.DepthTexture(1, 1) }));
+  const volumeRT = keep(new THREE.RenderTarget(1, 1, hdr));
+  const lightRT = keep(new THREE.RenderTarget(384, 384, hdr));
+  const heightRT = keep(new THREE.RenderTarget(256, 256, hdr));
   const bloomLevels = 4;
-  const bloomDown = Array.from({ length: bloomLevels }, () => keep(new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false })));
-  const bloomUp = Array.from({ length: bloomLevels }, () => keep(new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false })));
+  const bloomDown = Array.from({ length: bloomLevels }, () => keep(new THREE.RenderTarget(1, 1, hdr)));
+  const bloomUp = Array.from({ length: bloomLevels }, () => keep(new THREE.RenderTarget(1, 1, hdr)));
 
   /* ---------------------------------------------------------------- shared uniforms */
-  const beam = new THREE.Vector4(ROOM.half, Math.cos(ROOM.turn), Math.sin(ROOM.turn), ROOM.ceiling);
-  const shared = {
-    uBeam: { value: beam },
-    uLight: { value: lightRT.texture },
-    uHeights: { value: heightRT.texture },
-    uTime: { value: 0 },
-    uCam: { value: new THREE.Vector3() },
-    uClock: { value: 0 },
-    uFright: { value: 0 },
-  };
+  const beam = createBeam(ROOM, lightRT.texture, heightRT.texture);
+  const uTime = uniform(0);
+  const uCam = uniform(new THREE.Vector3());
+  const uClock = uniform(0); // the swimming clock: runs faster while the school is bolting
+  const uFright = uniform(0);
+  const uShaft = uniform(ROOM.shaft);
 
   const camera = new THREE.PerspectiveCamera(60, 9 / 16, 0.1, 80);
+  camera.coordinateSystem = renderer.coordinateSystem;
   const flat = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const quad = keep(new THREE.PlaneGeometry(2, 2));
-  const pass = (frag, uniforms, extra = {}) => {
-    const material = keep(new THREE.ShaderMaterial({ uniforms, vertexShader: QUAD_VERT, fragmentShader: frag, depthTest: false, depthWrite: false, ...extra }));
-    const scene = new THREE.Scene();
-    const mesh = new THREE.Mesh(quad, material);
-    mesh.frustumCulled = false;
-    scene.add(mesh);
-    return { scene, u: material.uniforms };
+  const quad = new THREE.QuadMesh();
+  const pass = (material) => {
+    keep(material);
+    return () => {
+      quad.material = material;
+      quad.render(renderer);
+    };
   };
 
   /* ---------------------------------------------------------------- the chamber */
   const world = new THREE.Scene();
-  const material = (frag, uniforms = {}, extra = {}) => keep(new THREE.ShaderMaterial({ uniforms: { ...shared, ...uniforms }, vertexShader: WORLD_VERT, fragmentShader: frag, ...extra }));
+  const ctx = { beam, uCam, uTime, uShaft };
 
-  const floor = new THREE.Mesh(keep(new THREE.PlaneGeometry(60, 60).rotateX(-Math.PI / 2)), material(FLOOR_FRAG));
+  const floor = new THREE.Mesh(keep(new THREE.PlaneGeometry(60, 60).rotateX(-Math.PI / 2)), keep(floorMaterial(ctx)));
   world.add(floor);
 
   // the ceiling, with a square hole turned the way the light is
@@ -97,13 +114,13 @@ export function createScene(host, hooks = {}) {
   // a Shape lies in xy; turned to lie flat facing down, its y becomes z, just as the corners have it
   const ceilingGeo = keep(new THREE.ShapeGeometry(slab).rotateX(Math.PI / 2));
   ceilingGeo.translate(0, ROOM.ceiling, 0);
-  const ceiling = new THREE.Mesh(ceilingGeo, material(ROOM_FRAG, { uPart: { value: 0 }, uShaft: { value: ROOM.shaft } }, { side: THREE.DoubleSide }));
-  world.add(ceiling);
+  const ceilingMat = keep(roomMaterial(CEILING, ctx, { side: THREE.DoubleSide }));
+  world.add(new THREE.Mesh(ceilingGeo, ceilingMat));
 
   // the walls, far off in the dark: every ray then ends on something, and the fog has an end
   const wallGeo = keep(new THREE.PlaneGeometry(28, ROOM.ceiling));
   for (let i = 0; i < 4; i++) {
-    const wall = new THREE.Mesh(wallGeo, material(ROOM_FRAG, { uPart: { value: 0 }, uShaft: { value: ROOM.shaft } }));
+    const wall = new THREE.Mesh(wallGeo, ceilingMat);
     wall.rotation.y = (i * Math.PI) / 2;
     wall.position.set(-14 * Math.sin(wall.rotation.y), ROOM.ceiling / 2, -14 * Math.cos(wall.rotation.y));
     wall.updateMatrixWorld();
@@ -136,70 +153,59 @@ export function createScene(host, hooks = {}) {
     shaftGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
   }
   keep(shaftGeo);
-  world.add(new THREE.Mesh(shaftGeo, material(ROOM_FRAG, { uPart: { value: 1 }, uShaft: { value: ROOM.shaft } }, { side: THREE.DoubleSide })));
+  world.add(new THREE.Mesh(shaftGeo, keep(roomMaterial(SHAFT, ctx, { side: THREE.DoubleSide }))));
   const waterGeo = keep(new THREE.PlaneGeometry(ROOM.half * 2, ROOM.half * 2).rotateX(Math.PI / 2).rotateY(-ROOM.turn));
   waterGeo.translate(0, ROOM.ceiling + ROOM.shaft, 0);
-  world.add(new THREE.Mesh(waterGeo, material(ROOM_FRAG, { uPart: { value: 2 }, uShaft: { value: ROOM.shaft } }, { side: THREE.DoubleSide })));
+  world.add(new THREE.Mesh(waterGeo, keep(roomMaterial(WATER, ctx, { side: THREE.DoubleSide }))));
 
   /* ---------------------------------------------------------------- the fish */
-  const school = new School({ half: ROOM.half, turn: ROOM.turn, low: 3.2, high: 7.2 });
-  const fishGeos = Object.fromEntries(Object.entries(BODIES).map(([body, shape]) => [body, keep(fishGeometry(shape))]));
-  school.looks(fishGeos);
-  const fishMat = keep(new THREE.ShaderMaterial({ uniforms: shared, vertexShader: FISH_VERT, fragmentShader: FISH_FRAG, side: THREE.DoubleSide }));
-
-  // the same fish, drawn from above into the height map
-  const maskMat = keep(
-    new THREE.ShaderMaterial({
-      uniforms: shared,
-      vertexShader: MASK_VERT,
-      fragmentShader: MASK_FRAG,
-      side: THREE.DoubleSide,
-      depthTest: false,
-      depthWrite: false,
-      blending: THREE.CustomBlending,
-      blendEquation: THREE.MaxEquation,
-      blendSrc: THREE.OneFactor,
-      blendDst: THREE.OneFactor,
-    })
-  );
+  const school = createSchool({ half: ROOM.half, turn: ROOM.turn, low: 3.2, high: 7.2, scale: fishScale });
+  const fishCtx = { beam, uCam, buffers: school.buffers, uClock, uFright };
   const maskScene = new THREE.Scene();
-  // one instanced mesh per body shape, and its twin in the height map sharing the very same matrices
-  const fishMeshes = {};
-  for (const [body, group] of Object.entries(school.groups)) {
-    const mesh = new THREE.InstancedMesh(fishGeos[body], fishMat, group.length);
+  // one mesh per body shape, drawn once per fish of that shape, and its twin in the height map
+  for (const [body, shape] of Object.entries(BODIES)) {
+    const group = school.groups[body];
+    if (!group) continue;
+    const geo = keep(new THREE.InstancedBufferGeometry().copy(fishGeometry(shape)));
+    geo.instanceCount = group.count;
+    const uBase = uniform(group.base, 'uint');
+    const mesh = new THREE.Mesh(geo, keep(fishMaterial(fishCtx, uBase)));
     mesh.frustumCulled = false;
     world.add(mesh);
-    const mask = new THREE.InstancedMesh(fishGeos[body], maskMat, group.length);
-    mask.instanceMatrix = mesh.instanceMatrix;
+    const mask = new THREE.Mesh(geo, keep(maskMaterial(fishCtx, uBase)));
     mask.frustumCulled = false;
     maskScene.add(mask);
-    fishMeshes[body] = mesh;
   }
 
   /* ---------------------------------------------------------------- passes */
-  const causticPass = pass(CAUSTIC_FRAG, { uTime: shared.uTime, uHalf: { value: ROOM.half } });
-  const volumePass = pass(VOLUME_FRAG, {
-    ...shared,
-    uDepth: { value: sceneRT.depthTexture },
-    uProjInv: { value: camera.projectionMatrixInverse },
-    uViewInv: { value: camera.matrixWorld },
-    uSteps: { value: coarse ? 24 : 40 },
-    uShaft: { value: ROOM.shaft },
-    uHalo: { value: 1 },
-    uDebug: { value: 0 },
-  });
-  const brightPass = pass(BRIGHT_FRAG, { uScene: { value: sceneRT.texture }, uVolume: { value: volumeRT.texture } });
-  const downPass = pass(DOWN_FRAG, { uTex: { value: null }, uTexel: { value: new THREE.Vector2() } });
-  const upPass = pass(UP_FRAG, { uTex: { value: null }, uBase: { value: null }, uTexel: { value: new THREE.Vector2() } });
-  const finalPass = pass(FINAL_FRAG, {
-    uScene: { value: sceneRT.texture },
-    uVolume: { value: volumeRT.texture },
-    uBloom: { value: bloomUp[0].texture },
-    uTime: shared.uTime,
-    uAspect: { value: new THREE.Vector2(1, 1) },
-    uExposure: { value: 1.0 },
-    uBloomAmt: { value: 0.28 },
-  });
+  const causticPass = pass(causticMaterial(uTime, ROOM.half));
+  const volume = {
+    depthTexture: sceneRT.depthTexture,
+    uProjInv: uniform(camera.projectionMatrixInverse),
+    uViewInv: uniform(camera.matrixWorld),
+    uNear: uniform(camera.near),
+    uFar: uniform(camera.far),
+    uSteps: uniform(coarse ? 24 : 40, 'int'),
+    uShaft,
+    uHalo: uniform(1),
+    uDebug: uniform(0, 'int'),
+  };
+  const volumePass = pass(volumeMaterial(ctx, volume));
+  const brightPass = pass(brightMaterial(sceneRT.texture, volumeRT.texture));
+  const down = downMaterial(bloomDown[0].texture);
+  const downPass = pass(down.material);
+  const up = upMaterial(bloomDown[bloomLevels - 1].texture, bloomDown[bloomLevels - 2].texture);
+  const upPass = pass(up.material);
+  const final = {
+    sceneTexture: sceneRT.texture,
+    volumeTexture: volumeRT.texture,
+    bloomTexture: bloomUp[0].texture,
+    uAspect: uniform(new THREE.Vector2(1, 1)), // to keep the vignette round
+    uExposure: uniform(1.0),
+    uBloomAmt: uniform(0.28),
+  };
+  const fin = finalMaterial(ctx, final);
+  const finalPass = pass(fin.material);
 
   /* ---------------------------------------------------------------- framing */
   // The picture is composed for a tall screen: the hole near the top, the lit floor along the
@@ -218,7 +224,7 @@ export function createScene(host, hooks = {}) {
     camera.fov = THREE.MathUtils.radToDeg(2 * Math.atan(aspect < tall ? (tanV * tall) / aspect : tanV));
     camera.aspect = aspect;
     camera.updateProjectionMatrix();
-    finalPass.u.uAspect.value.set(w / Math.max(w, h), h / Math.max(w, h));
+    final.uAspect.value.set(w / Math.max(w, h), h / Math.max(w, h));
   }
   function aim(t = 0) {
     // a little give toward the pointer, as if leaning to look, over a slow drift so it never sits still
@@ -271,10 +277,9 @@ export function createScene(host, hooks = {}) {
   function draw() {
     // 1. the light's pattern, and where the fish are from above
     renderer.setRenderTarget(lightRT);
-    renderer.render(causticPass.scene, flat);
+    causticPass();
     renderer.setRenderTarget(heightRT);
-    renderer.setClearColor(0x000000, 1);
-    renderer.clear();
+    renderer.clear(true, false, false);
     renderer.render(maskScene, flat);
     // 2. the chamber
     renderer.setRenderTarget(sceneRT);
@@ -282,48 +287,47 @@ export function createScene(host, hooks = {}) {
     renderer.render(world, camera);
     // 3. the light in the water
     renderer.setRenderTarget(volumeRT);
-    renderer.render(volumePass.scene, flat);
+    volumePass();
     // 4. bloom
     renderer.setRenderTarget(bloomDown[0]);
-    renderer.render(brightPass.scene, flat);
+    brightPass();
     for (let i = 1; i < bloomLevels; i++) {
-      downPass.u.uTex.value = bloomDown[i - 1].texture;
-      downPass.u.uTexel.value.set(1 / bloomDown[i - 1].width, 1 / bloomDown[i - 1].height);
+      down.tex.value = bloomDown[i - 1].texture;
+      down.texel.value.set(1 / bloomDown[i - 1].width, 1 / bloomDown[i - 1].height);
       renderer.setRenderTarget(bloomDown[i]);
-      renderer.render(downPass.scene, flat);
+      downPass();
     }
     let from = bloomDown[bloomLevels - 1];
     for (let i = bloomLevels - 2; i >= 0; i--) {
-      upPass.u.uTex.value = from.texture;
-      upPass.u.uBase.value = bloomDown[i].texture;
-      upPass.u.uTexel.value.set(1 / from.width, 1 / from.height);
+      up.tex.value = from.texture;
+      up.base.value = bloomDown[i].texture;
+      up.texel.value.set(1 / from.width, 1 / from.height);
       renderer.setRenderTarget(bloomUp[i]);
-      renderer.render(upPass.scene, flat);
+      upPass();
       from = bloomUp[i];
     }
-    finalPass.u.uBloom.value = from.texture;
+    fin.bloom.value = from.texture;
     // 5. out
     renderer.setRenderTarget(null);
-    renderer.render(finalPass.scene, flat);
+    finalPass();
   }
 
   let raf = 0;
   let before = 0;
   let t = 0;
   let frozen = false;
-  let clock = 0; // the swimming clock: runs faster while the school is bolting
+  let clock = 0;
   function tick(dt) {
     t += dt;
-    shared.uTime.value = t;
+    uTime.value = t;
     clock += dt * (1 + 1.6 * school.fright);
-    shared.uClock.value = clock;
-    shared.uFright.value = school.fright;
+    uClock.value = clock;
+    uFright.value = school.fright;
     pointer.sx += (pointer.x - pointer.sx) * (1 - Math.exp(-2 * dt));
     pointer.sy += (pointer.y - pointer.sy) * (1 - Math.exp(-2 * dt));
     aim(t);
-    shared.uCam.value.copy(camera.position);
-    school.step(Math.min(dt, 1 / 30), t);
-    school.write(fishMeshes);
+    uCam.value.copy(camera.position);
+    school.step(renderer, Math.min(dt, 1 / 30), t);
     draw();
   }
   function loop(now) {
@@ -333,20 +337,21 @@ export function createScene(host, hooks = {}) {
     if (!frozen) tick(dt);
   }
   // let the school settle into a shape before anyone sees it
-  for (let i = 0; i < 240; i++) school.step(1 / 30, i / 30);
+  for (let i = 0; i < 240; i++) school.step(renderer, 1 / 30, i / 30);
   tick(0);
   raf = requestAnimationFrame(loop);
 
   return {
     debug: {
       renderer,
+      backend: renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl',
       camera,
       view,
       school,
       startle: (p) => school.startle(p),
-      shared,
-      volume: volumePass.u,
-      final: finalPass.u,
+      uniforms: { uTime, uCam, uClock, uFright, uShaft, uBeam: beam.uBeam },
+      volume,
+      final,
       frame,
       run(seconds, step = 1 / 60) {
         frozen = true;

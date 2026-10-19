@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="description" content="물속 석실 천창으로 빛기둥이 쏟아지고, 그 빛 속을 금붕어 떼가 헤엄친다. three.js와 직접 쓴 셰이더로 그린 실시간 장면." />
+    <meta name="description" content="물속 석실 천창으로 빛기둥이 쏟아지고, 그 빛 속을 금붕어 떼가 헤엄친다. three.js TSL로 그린 실시간 장면 (WebGPU, 없으면 WebGL 2)." />
     <title>빛우물</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <main id="app">
       <div id="stage" aria-hidden="true"></div>
-      <p class="fail" id="fail" hidden>이 장면은 WebGL 2(부동소수 렌더 타깃)가 필요한데, 이 브라우저에서는 시작하지 못했어요.</p>
+      <p class="fail" id="fail" hidden>이 장면은 WebGPU 또는 WebGL 2가 필요한데, 이 브라우저에서는 시작하지 못했어요.</p>
       <h1 class="sr">빛우물</h1>
       <p class="hint" id="hint" aria-hidden="true">물을 두드려 보세요</p>
     </main>
