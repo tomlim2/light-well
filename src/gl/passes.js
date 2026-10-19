@@ -80,8 +80,11 @@ export const VOLUME_FRAG = /* glsl */ `
     }
     // The beam in front of the cube (the surface and the shaft) is drawn fainter: as the reference
     // has it, the cube stays dark and crisp with the streaks beginning beneath it.
-    float hitY = uCam.y + dir.y * sceneDist;
-    glow *= mix(1.0, 0.35, smoothstep(uBeam.w - 0.3, uBeam.w + 0.2, hitY));
+    // (the cube only: the ceiling is at the same height, and dimming rays that end on it would draw
+    // a line across the beam where the back wall meets it)
+    vec3 hitP = uCam + dir * sceneDist;
+    float onCube = beamInside(beamLocal(hitP.xz), 0.1) * smoothstep(uBeam.w - 0.3, uBeam.w, hitP.y);
+    glow *= mix(1.0, 0.35, onCube);
     vec3 col = vec3(0.36, 0.66, 0.74) * glow * 0.45;
 
     // The halo: the water round the column, lit by what the column scatters. Only outside it: inside,

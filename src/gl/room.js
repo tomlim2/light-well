@@ -125,11 +125,14 @@ export const ROOM_FRAG = /* glsl */ `
       // the bottom edge of the shaft catches the light: a thin bright rim where the beam begins
       col += vec3(0.5, 0.8, 0.9) * exp(-(vWorld.y - uBeam.w) * 7.0) * 0.5;
     } else {
-      // the ceiling and the walls: dark stone, a little light thrown on it round the hole
+      // The ceiling and the walls: dark stone, graded by height alone and not fogged by distance,
+      // so that where a wall meets the ceiling both are the same colour and no edge shows through
+      // the beam. A little light is thrown on the ceiling round the hole.
       vec2 out_ = max(abs(local) - uBeam.x, 0.0);
       float near = exp(-length(out_) * 2.2);
-      col = vec3(0.004, 0.008, 0.012) + vec3(0.05, 0.12, 0.15) * near * (0.6 + 0.4 * fbm(vWorld.xz * 3.0));
+      vec3 dark = mix(vec3(0.008, 0.017, 0.025), vec3(0.004, 0.009, 0.014), clamp(vWorld.y / uBeam.w, 0.0, 1.0));
+      col = dark + vec3(0.05, 0.12, 0.15) * near * (0.6 + 0.4 * fbm(vWorld.xz * 3.0));
     }
-    gl_FragColor = vec4(fogged(col, uPart == 2 ? 0.012 : (uPart == 0 ? 0.045 : 0.03)), 1.0);
+    gl_FragColor = vec4(fogged(col, uPart == 2 ? 0.012 : (uPart == 0 ? 0.0 : 0.03)), 1.0);
   }
 `;
