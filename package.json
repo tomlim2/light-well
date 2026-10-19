@@ -1,7 +1,7 @@
 {
   "name": "light-well",
   "private": true,
-  "version": "0.3.3",
+  "version": "0.4.0",
   "type": "module",
   "description": "빛우물: 물속 석실 천창으로 쏟아지는 빛기둥과 그 안을 헤엄치는 금붕어 떼. three.js TSL (WebGPU, WebGL 2 fallback).",
   "scripts": {
